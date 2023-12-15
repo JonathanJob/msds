@@ -1,0 +1,303 @@
+---
+title: "COVID19_Analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load-packages, include=FALSE}
+library(stringr)
+library(tidyverse)
+```
+
+## R Markdown Document
+
+Setting variables for the jhu data pull:
+
+```{r get_jhu_data}
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+
+file_names <- c("time_series_covid19_confirmed_global.csv", "time_series_covid19_deaths_global.csv", "time_series_covid19_confirmed_US.csv",
+                "time_series_covid19_deaths_US.csv")
+urls <- str_c(url_in, file_names)
+```
+
+Code to import data:
+
+```{r import_data, message=FALSE}
+global_cases <- read_csv(urls[1])
+global_deaths <- read_csv(urls[2])
+US_cases <- read_csv(urls[3])
+US_deaths <- read_csv(urls[4])
+```
+
+
+Transform the global_cases dataset:
+```{r process_data}
+global_cases <- global_cases %>%
+  pivot_longer(cols= -c('Province/State', 'Country/Region', Lat, Long),
+               names_to = "date",
+               values_to = "cases") %>%
+  select(-c(Lat,Long))
+```
+
+Transform the global_deaths dataset:
+```{r process_data_deaths}
+global_deaths <- global_deaths %>%
+  pivot_longer(cols= -c('Province/State', 'Country/Region', Lat, Long),
+               names_to = "date",
+               values_to = "deaths") %>%
+  select(-c(Lat,Long))
+```
+
+Join Cases and Deaths:
+```{r join_cases_deaths}
+global <- global_cases %>%
+  full_join(global_deaths) %>%
+  rename(Country_Region = 'Country/Region', Province_State = 'Province/State') %>%
+  mutate(date = mdy(date))
+
+global <- global %>%
+  unite("Combined_Key",
+        c(Province_State, Country_Region),
+        sep = ", ",
+        na.rm = TRUE,
+        remove = FALSE
+        )
+
+```
+
+Transform the us_cases dataset:
+```{r US_cases_process_data}
+US_cases <- US_cases %>%
+  pivot_longer(cols= -(UID:Combined_Key),
+               names_to = "date",
+               values_to = "cases") %>%
+  select(Admin2:cases) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat, Long_))
+```
+
+Transform the us_cases dataset:
+
+```{r US_deaths_process_data}
+US_deaths <- US_deaths %>%
+  pivot_longer(cols= -(UID:Population),
+               names_to = "date",
+               values_to = "deaths") %>%
+  select(Admin2:deaths) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat, Long_))
+```
+
+
+Join US Cases and Deaths:
+```{r US_cases_deaths_join}
+US <- US_cases %>%
+  full_join(US_deaths)
+US
+```
+
+
+```{r get_Pop_data}
+uid_lookup_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+
+uid <- read_csv(uid_lookup_url) %>%
+  select(-c(Lat, Long_, Combined_Key, code3, iso2, iso3, Admin2))
+```
+
+
+Join global and uid data:
+```{r join_global_uid_data}
+global <- global %>%
+  left_join(uid, by = c("Province_State", "Country_Region")) %>%
+  select(-c(UID, FIPS)) %>%
+  select(Province_State, Country_Region, date, cases, deaths, Population, Combined_Key)
+```
+
+## Data Visualization
+
+US by state analysis:
+
+```{r us_by_state}
+US_by_state <- US %>%
+  group_by(Province_State, Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths), Population = sum(Population)) %>%
+  mutate(deaths_per_mil = deaths*1000000 / Population) %>%
+  select(Province_State, Country_Region, date, cases, deaths, deaths_per_mil, Population) %>%
+  ungroup()
+```
+
+US totals analysis:
+
+```{r us_totals}
+US_totals <- US_by_state %>%
+  group_by(Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths), Population = sum(Population)) %>%
+  mutate(deaths_per_mil = deaths*1000000 / Population) %>%
+  select(Country_Region, date, cases, deaths, deaths_per_mil, Population) %>%
+  ungroup()
+
+US_totals %>%
+  filter(cases > 0) %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "COVID19 in US", y = NULL)
+```
+
+### Analyzing data further and adding more attributes
+
+US state and totals :
+
+Calculating aggregates for states and adding new_cases and new_deaths
+
+```{r us_state_total_lag_add}
+US_by_state <- US_by_state %>%
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+
+US_totals <- US_totals %>%
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+
+US_totals %>%
+  filter(cases > 0) %>%
+  ggplot(aes(x = date, y = new_cases)) +
+  geom_line(aes(color = "new_cases")) +
+  geom_point(aes(color = "new_cases")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths")) +
+  geom_point(aes(y = new_deaths, color = "new_deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "COVID19 in US", y = NULL)
+```
+
+### Data visualization in VA
+
+Analyzing data for the state of VA:
+
+```{r covid_va}
+US_by_state %>%
+  filter(cases > 0) %>%
+  filter(Province_State == "Virginia") %>%
+  ggplot(aes(x = date, y = new_cases)) +
+  geom_line(aes(color = "new_cases")) +
+  geom_point(aes(color = "new_cases")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths")) +
+  geom_point(aes(y = new_deaths, color = "new_deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "COVID19 in VA", y = NULL)
+```
+
+### State Comparisons:
+
+Comparing data across different states
+
+Bottom 10 states for deaths:
+
+```{r state_compare}
+US_state_totals <- US_by_state %>%
+  group_by(Province_State) %>%
+  summarize(deaths = max(deaths), cases = max(cases),
+            population = max(Population),
+            cases_per_thou = 1000*cases / population,
+            deaths_per_thou = 1000*deaths / population) %>%
+  filter(cases > 0, population > 0)
+
+US_state_totals %>%
+  slice_min(deaths_per_thou, n = 10)
+```
+
+Top 10 states for deaths:
+```{r state_compare_top10}
+US_state_totals %>%
+  slice_max(deaths_per_thou, n = 10)
+```
+
+## Modeling Data
+
+Creating a model to predict the deaths:
+
+```{r data_model1}
+mod <- lm(deaths_per_thou ~ cases_per_thou, data = US_state_totals)
+summary(mod)
+x_grid <- seq(1, 151)
+new_df <- tibble(cases_per_thou = x_grid)
+US_tot_w_pred <- US_state_totals %>% mutate(pred = predict(mod))
+US_tot_w_pred
+US_tot_w_pred %>% ggplot() +
+  geom_point(aes(x = cases_per_thou, y = deaths_per_thou), color = "blue") +
+  geom_point(aes(x = cases_per_thou, y = pred), color = "red")
+```
+
+## Breakdown of data in VA
+
+Looking at data in more detail in VA:
+
+```{r va_breakdown}
+US_by_state <- US_by_state %>%
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+
+US_totals <- US_totals %>%
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+```
+
+US by state analysis:
+
+```{r va_details}
+US_new_cases_deaths <- US %>%
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+
+VA_details <- US_new_cases_deaths %>%
+  filter(Province_State %in% 'Virginia') %>%
+  mutate(Year_Month = format(date, "%Y-%m")) %>%
+  group_by(Province_State, Country_Region, Year_Month, Admin2) %>%
+  summarize(cases = sum(new_cases), deaths = sum(new_deaths), Population = sum(Population)) %>%
+  mutate(deaths_per_thou = deaths*1000 / Population) %>%
+  select(Province_State, Country_Region, Admin2, Year_Month,cases, deaths, deaths_per_thou, Population) %>%
+  ungroup()
+
+VA_details
+
+VA_details %>%
+  slice_max(Population, n = 10) %>%
+  select(Population, Admin2 )
+```
+
+### VA Data Visualization
+
+Comparing deaths in two of the most populous counties in VA (Fairfax and Loudoun) with other counties:
+
+```{r va_data_viz_county}
+
+VA_details %>%
+  filter(Admin2 %in% c('Loudoun',
+                      'Fairfax',
+                      'Alexandria',
+                      'Lynchburg',
+                      'Richmond')) %>%
+  ggplot(aes(x = Year_Month, y = deaths, color = Admin2, group = Admin2)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Number of Deaths Over Time",
+       x = "Year Month",
+       y = "Deaths") +
+  scale_color_brewer(palette = "Set1") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+The deaths seem to come in spikes in these counties. Especially in Fairfax which is one of the biggest counties in VA there are three significant spikes in the death numbers. 

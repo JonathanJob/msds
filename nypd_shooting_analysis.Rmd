@@ -1,0 +1,192 @@
+---
+title: "NYPD Shooting"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load-packages, include=FALSE}
+library(stringr)
+library(tidyverse)
+```
+
+## Approach
+
+Analysis of the NYPD shooting dataset.
+
+The dataset I am using is located here: <https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD>
+
+I will first import this data and then perform trend studies to determine if we can draw some conclusions. I have segmented the data on the borrough(BORO) to see if that can add some insights.
+
+At the end I have created a model to attempt to predict the number of murders in a BORO.
+
+### Import the data
+
+Import the data:
+
+```{r import_data}
+url_in = 'https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD'
+nypd_data <- read_csv(url_in)
+
+spec(nypd_data)
+```
+
+### Summarize the data (year over year)
+
+I will first transform the data to extract the year from the date of incidence.
+
+```{r mutate_date_to_year}
+nypd_year_totals <- nypd_data %>%
+  mutate(OCCUR_YEAR = format(mdy(OCCUR_DATE), "%Y")) %>%
+  select(OCCUR_YEAR)
+```
+
+This has yielded a dataset containing the year of the incident for all the incidents in the dataset.
+
+```{r mutate_date_to_year_dataset}
+summary(nypd_year_totals)
+```
+
+I will now summarize the dataset so it contains one row for every year. Then I will graph the data to determine if we can find any year on year trends:
+
+```{r summarization_on_year}
+nypd_year_totals <- nypd_year_totals %>%
+  group_by(OCCUR_YEAR) %>%
+  summarize(incidents = n()) %>%
+  select(OCCUR_YEAR, incidents) %>%
+ungroup()
+
+nypd_year_totals
+
+nypd_year_totals %>%
+  ggplot(aes(x = OCCUR_YEAR, y = incidents, group = 1)) +
+  geom_line(color = "blue") +
+  labs(title = "Incidents Over Years",
+       x = "Year",
+       y = "Count") +
+  scale_color_brewer(palette = "Set1") 
+```
+
+### Bias introspection(Shooting trends)
+
+I have had a **personal** bias that the number of shootings have been consistently going up in the country and that gun violence is on the rise. The data from the NYPD is however showing that in NYC there has been an overall downward trend when looking at the years 2011 to 2019. 2020 saw the spike go back up but this might be related to public services being impacted through covid-19.
+
+## Summarizing over other attributes
+
+I then tried to look at the trends at the borough level to see if that tells a different story to the numbers for the overall city.
+
+```{r boro_trends}
+nypd_year_att_totals <- nypd_data %>%
+  mutate(OCCUR_YEAR = format(mdy(OCCUR_DATE), "%Y")) %>%
+  select(OCCUR_YEAR, BORO, PERP_RACE)
+
+nypd_year_att_totals %>%
+  ggplot(aes(x = OCCUR_YEAR, y = after_stat(count), color = BORO, group = BORO)) +
+  geom_line(stat = "count") +
+  labs(title = "Incidents Over Years by BORO",
+       x = "Year",
+       y = "Count") +
+  scale_color_brewer(palette = "Set1")
+```
+
+The trends at the boro level are consistent with the reduction in shootings that we are seeing for the whole city. Staten Island is the exception here as the curve is mostly flat compared to the other boroughs.
+
+Next I took at look at how race affects the trend:
+
+```{r perp_race_trends}
+nypd_year_att_totals %>%
+  ggplot(aes(x = OCCUR_YEAR, y = after_stat(count), color = PERP_RACE, group = PERP_RACE)) +
+  geom_line(stat = "count") +
+  labs(title = "Incidents Over Years by PERP_RACE",
+       x = "Year",
+       y = "Count") +
+  scale_color_brewer(palette = "Set1") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+There is a significant difference in volume in the chart discplayed above. PERP_RACE = 'BLACK' accounts for a large volume of the incidents. 
+
+### Bias introspection(Racial factors)
+
+There might be some bias represented in the visualization here. If the population itself has a higher percentage of black people that would not indicate a disproportionately higher incident count based on race. In order to alleviate this we would need to pull in demographics of NYC and use that to determine a population percentage.
+
+There might also be some bias here in the way the NYPD handles cases based on race or burrough.
+
+Trends for just PERP_RACE = 'BLACK':
+
+```{r perp_BLACK_trends}
+nypd_year_att_bl_totals <- nypd_year_att_totals %>%
+  filter(PERP_RACE == 'BLACK')
+
+nypd_year_att_bl_totals %>%
+  ggplot(aes(x = OCCUR_YEAR, y = after_stat(count), color = BORO, group = BORO)) +
+  geom_line(stat = "count") +
+  labs(title = "Incidents Over Years for PERP_RACE BLACK by BORO",
+       x = "Year",
+       y = "Count") +
+  scale_color_brewer(palette = "Set1") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+### Building a model
+
+I will now work on building a model to determine if we can predict the number of murders that will occur:
+
+First i will transform the data through aggregations:
+
+```{r model_data_prep}
+nypd_model_totals <- nypd_data %>%
+  mutate(OCCUR_YEAR = format(mdy(OCCUR_DATE), "%Y")) %>%
+  group_by(BORO, OCCUR_YEAR) %>%
+  summarize(incidents = n(), murders = sum(as.numeric(STATISTICAL_MURDER_FLAG))) %>%
+  select(BORO, OCCUR_YEAR, murders, incidents ) %>%
+ungroup()
+```
+
+Next I biuld a model using the incidents as an indenpendent variable which will be used to predict the dependent variable murders:
+
+```{r model_creation}
+lm_model = lm(murders ~ incidents , data = nypd_model_totals)
+```
+
+Lets look at some metrics around the created model:
+
+```{r model_metrics}
+summary(lm_model)
+```
+
+It looks like there is strong correlation between number of incidents and number of murders. I will now add the predicted value to the dataset and create a visualization to determine accuracy:
+
+```{r model_prediction}
+nypd_model_totals_pred = nypd_model_totals %>% mutate(murder_pred = predict(lm_model)) %>%
+  select(murders, murder_pred, incidents, BORO)
+nypd_model_totals_pred
+```
+
+Visualization to compare the predicted value vs the actual number of murders:
+
+```{r model_visualization}
+nypd_model_totals_pred %>%
+  ggplot() +
+  geom_point(aes(x = incidents, y = murders, color = "Actual"), size = 3) +
+  geom_point(aes(x = incidents, y = murder_pred, color = "Predicted (Model 1)"), size = 2) +
+  labs(title = "Actual vs Predicted Murders",
+       x = "Incidents",
+       y = "Number of Murders") +
+  scale_color_manual(values = c("blue", "red")) +
+  theme_minimal()
+```
+
+#### Model conclusions
+
+The linear model using number of incidents seems to be a good fit for predicting the number of murders. As we get to the higher incident numbers there seems to be more divergence. This could be fixed by looking at some higher level polynomials.
+
+
+## Session data
+
+Session information:
+
+```{r sessioninfo, echo=FALSE}
+sessionInfo()
+```
